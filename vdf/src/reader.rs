@@ -109,7 +109,7 @@ impl<R: Read> Reader<R> {
 	pub fn token(&mut self) -> Res<Token> {
 		self.prepare()?;
 
-		match dbg!(parser::next(&self.buffer)) {
+		match parser::next(&self.buffer) {
 			Ok((_, token)) =>
 				Ok(token),
 
