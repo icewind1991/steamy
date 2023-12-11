@@ -49,7 +49,7 @@ fn string(buffer: &[u8]) -> Result<Cow<str>, Error<&[u8]>> {
 		}
 
 		match String::from_utf8(string) {
-			Err(err) => Err(Error::new(bytes, ErrorKind::Verify)),
+			Err(_err) => Err(Error::new(bytes, ErrorKind::Verify)),
 			Ok(str)  => Ok(str.into())
 		}
 	}
