@@ -51,6 +51,8 @@ pub enum Event {
 	/// An entry.
 	Entry(Item, Item),
 
+	Comment,
+
 	/// EOF has been reached.
 	End,
 }
@@ -79,7 +81,7 @@ impl<R: Read> Reader<R> {
 		}
 
 		loop {
-			let needed = match (parser::next(&self.buffer)) {
+			let needed = match parser::next(&self.buffer) {
 				Err(Failure(_) | Error(_)) =>
 					return Err(Error::Parse),
 
@@ -107,7 +109,7 @@ impl<R: Read> Reader<R> {
 	pub fn token(&mut self) -> Res<Token> {
 		self.prepare()?;
 
-		match parser::next(&self.buffer) {
+		match dbg!(parser::next(&self.buffer)) {
 			Ok((_, token)) =>
 				Ok(token),
 
@@ -136,6 +138,9 @@ impl<R: Read> Reader<R> {
 
 			Ok(Token::Statement(s)) =>
 				Item::Statement(s.into_owned()),
+
+			Ok(Token::Comment(_)) =>
+				return Ok(Event::Comment),
 		};
 
 		let value = match self.token() {
@@ -156,6 +161,9 @@ impl<R: Read> Reader<R> {
 
 			Ok(Token::Statement(s)) =>
 				Item::Statement(s.into_owned()),
+
+			Ok(Token::Comment(_)) =>
+				return Ok(Event::Comment),
 		};
 
 		Ok(Event::Entry(key, value))

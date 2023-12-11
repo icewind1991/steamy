@@ -20,6 +20,9 @@ pub enum Token<'a> {
 
 	/// An enclosed or bare statement.
 	Statement(Cow<'a, str>),
+
+	/// A commented out line
+	Comment(Cow<'a, str>)
 }
 
 fn string(buffer: &[u8]) -> Result<Cow<str>, Error<&[u8]>> {
@@ -66,9 +69,16 @@ fn whitespace(input: &[u8]) -> IResult<&[u8], &[u8]> {
 
 pub fn next(input: &[u8]) -> IResult<&[u8], Token> {
 	let (input, _) = whitespace(input)?;
-	let (input, value) = alt((open, close, bare, enclosed))(input)?;
+	let (input, value) = alt((comment, open, close, bare, enclosed))(input)?;
 	let (input, _) = whitespace(input)?;
 	Ok((input, value))
+}
+
+fn comment(input: &[u8]) -> IResult<&[u8], Token> {
+	let (input, _) = tag(b"//")(input)?;
+	let (input, comment) = is_not("\n")(input)?;
+	let comment = string(comment).map_err(Error)?;
+	Ok((input, Token::Comment(comment)))
 }
 
 fn open(input: &[u8]) -> IResult<&[u8], Token> {
@@ -90,27 +100,15 @@ fn bare(input: &[u8]) -> IResult<&[u8], Token> {
 	alt((bare_statement, bare_item))(input)
 }
 
-/// like `is_not`, but returning `Ok` instead of `Incomplete` if the full input is consumed
-fn is_not_alt<'a>(arr: &'static str) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
-	move |input: &[u8]| {
-		match is_not(arr)(input) {
-			Ok(res) => Ok(res),
-			// end of input
-			Err(Incomplete(Needed::Size(size))) if size.get() == 1 => Ok((&[][..], input)),
-			Err(e) => Err(e)
-		}
-	}
-}
-
 fn bare_statement(input: &[u8]) -> IResult<&[u8], Token> {
 	let (input, _) = tag(b"#")(input)?;
-	let (input, value) = is_not_alt(" \t\n\r{}\"")(input)?;
+	let (input, value) = is_not(" \t\n\r{}\"")(input)?;
 	let value = string(value).map_err(Error)?;
 	Ok((input, Token::Statement(value)))
 }
 
 fn bare_item(input: &[u8]) -> IResult<&[u8], Token> {
-	let (input, value) = is_not_alt(" \t\n\r{}\"")(input)?;
+	let (input, value) = is_not(" \t\n\r{}\"")(input)?;
 	let value = string(value).map_err(Error)?;
 	Ok((input, Token::Item(value)))
 }
@@ -120,7 +118,7 @@ fn enclosed(input: &[u8]) -> IResult<&[u8], Token> {
 }
 
 fn enclosed_content(input: &[u8]) -> IResult<&[u8], &[u8]> {
-	escaped(is_not_alt("\"\\"), '\\', take(1usize))(input)
+	escaped(is_not("\"\\"), '\\', take(1usize))(input)
 }
 
 fn enclosed_statement(input: &[u8]) -> IResult<&[u8], Token> {
@@ -144,28 +142,29 @@ mod tests {
 
 	#[test]
 	fn next() {
-		assert_eq!(super::next(b"test"), Ok((&b""[..], Token::Item("test".into()))));
-		assert_eq!(super::next(b"\"test\""), Ok((&b""[..], Token::Item("test".into()))));
-		assert_eq!(super::next(b"\"\""), Ok((&b""[..], Token::Item("".into()))));
-		assert_eq!(super::next(b"#test"), Ok((&b""[..], Token::Statement("test".into()))));
-		assert_eq!(super::next(b"\"#test\""), Ok((&b""[..], Token::Statement("test".into()))));
-		assert_eq!(super::next(b"{"), Ok((&b""[..], Token::GroupStart)));
-		assert_eq!(super::next(b"}"), Ok((&b""[..], Token::GroupEnd)));
+		assert_eq!(super::next(b"test\n"), Ok((&b""[..], Token::Item("test".into()))));
+		assert_eq!(super::next(b"\"test\"\n"), Ok((&b""[..], Token::Item("test".into()))));
+		assert_eq!(super::next(b"\"\"\n"), Ok((&b""[..], Token::Item("".into()))));
+		assert_eq!(super::next(b"#test\n"), Ok((&b""[..], Token::Statement("test".into()))));
+		assert_eq!(super::next(b"\"#test\"\n"), Ok((&b""[..], Token::Statement("test".into()))));
+		assert_eq!(super::next(b"{\n"), Ok((&b""[..], Token::GroupStart)));
+		assert_eq!(super::next(b"}\n"), Ok((&b""[..], Token::GroupEnd)));
+		assert_eq!(super::next(b"//test\n"), Ok((&b""[..], Token::Comment("test".into()))));
 	}
 
 	#[test]
 	fn bare() {
-		assert_eq!(super::bare(b"test"), Ok((&b""[..], Token::Item("test".into()))));
-		assert_eq!(super::bare(b"#test"), Ok((&b""[..], Token::Statement("test".into()))));
+		assert_eq!(super::bare(b"test\n"), Ok((&b"\n"[..], Token::Item("test".into()))));
+		assert_eq!(super::bare(b"#test\n"), Ok((&b"\n"[..], Token::Statement("test".into()))));
 
-		assert_eq!(super::bare(b"lol wut"), Ok((&b" wut"[..], Token::Item("lol".into()))));
-		assert_eq!(super::bare(b"#lol wut"), Ok((&b" wut"[..], Token::Statement("lol".into()))));
+		assert_eq!(super::bare(b"lol wut\n"), Ok((&b" wut\n"[..], Token::Item("lol".into()))));
+		assert_eq!(super::bare(b"#lol wut\n"), Ok((&b" wut\n"[..], Token::Statement("lol".into()))));
 
-		assert_eq!(super::bare(b"lol{"), Ok((&b"{"[..], Token::Item("lol".into()))));
-		assert_eq!(super::bare(b"#lol{"), Ok((&b"{"[..], Token::Statement("lol".into()))));
+		assert_eq!(super::bare(b"lol{\n"), Ok((&b"{\n"[..], Token::Item("lol".into()))));
+		assert_eq!(super::bare(b"#lol{\n"), Ok((&b"{\n"[..], Token::Statement("lol".into()))));
 
-		assert_eq!(super::bare(b"lol}"), Ok((&b"}"[..], Token::Item("lol".into()))));
-		assert_eq!(super::bare(b"#lol}"), Ok((&b"}"[..], Token::Statement("lol".into()))));
+		assert_eq!(super::bare(b"lol}\n"), Ok((&b"}\n"[..], Token::Item("lol".into()))));
+		assert_eq!(super::bare(b"#lol}\n"), Ok((&b"}\n"[..], Token::Statement("lol".into()))));
 	}
 
 	#[test]

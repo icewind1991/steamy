@@ -46,7 +46,10 @@ impl Table {
 					insert(&mut map, name, Table::load(reader)?.into()),
 
 				Event::GroupEnd | Event::End =>
-					break
+					break,
+
+				Event::Comment =>
+					continue,
 			}
 		}
 

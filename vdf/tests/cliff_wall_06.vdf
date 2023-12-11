@@ -6,7 +6,7 @@
     "$detailscale" 4
     "$detailblendfactor" 1
     "$detailblendmode" 0
-//  "$detailtexturetransform"
-    $seamless_detail "1"
+//  "$detailtexturetransform" "1"
+    "$seamless_detail" "1"
     "$seamless_scale" ".001"
 }
