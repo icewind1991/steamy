@@ -1,8 +1,9 @@
 use std::ops::Deref;
 use std::io::{Read, BufReader};
-use parser::{self, Token};
-use {Result as Res, Error};
-use nom::IResult::{Done, Incomplete, Error as Fail};
+use std::num::NonZeroUsize;
+use crate::parser::{self, Token};
+use crate::{Result as Res, Error};
+use nom::Err::*;
 use nom::Needed;
 
 /// Kinds of item.
@@ -78,23 +79,23 @@ impl<R: Read> Reader<R> {
 		}
 
 		loop {
-			let needed = match parser::next(&self.buffer) {
-				Fail(_) =>
+			let needed = match (parser::next(&self.buffer)) {
+				Err(Failure(_) | Error(_)) =>
 					return Err(Error::Parse),
 
-				Incomplete(Needed::Size(size)) =>
+				Err(Incomplete(Needed::Size(size))) =>
 					size,
 
-				Incomplete(Needed::Unknown) =>
-					64,
+				Err(Incomplete(Needed::Unknown)) =>
+					NonZeroUsize::new(64).unwrap(),
 
-				Done(rest, _) => {
+				Ok((rest, _)) => {
 					self.consumed = self.buffer.len() - rest.len();
 					break;
 				}
 			};
 
-			if try!(self.stream.by_ref().take(needed as u64).read_to_end(&mut self.buffer)) == 0 {
+			if self.stream.by_ref().take(needed.get() as u64).read_to_end(&mut self.buffer)? == 0 {
 				return Err(Error::Eof);
 			}
 		}
@@ -104,10 +105,10 @@ impl<R: Read> Reader<R> {
 
 	/// Get the next parser token without doing any copies.
 	pub fn token(&mut self) -> Res<Token> {
-		try!(self.prepare());
+		self.prepare()?;
 
 		match parser::next(&self.buffer) {
-			Done(_, token) =>
+			Ok((_, token)) =>
 				Ok(token),
 
 			_ =>

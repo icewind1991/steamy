@@ -1,6 +1,3 @@
-#[macro_use]
-extern crate nom;
-
 use std::io::{Read};
 use std::fs::File;
 use std::path::Path;
@@ -20,7 +17,7 @@ pub mod parser;
 
 /// Create a reader from the given path.
 pub fn open<P: AsRef<Path>>(path: P) -> Result<Reader<File>> {
-	Ok(Reader::from(try!(File::open(path))))
+	Ok(Reader::from(File::open(path)?))
 }
 
 /// Create a reader from the given stream.
@@ -30,5 +27,5 @@ pub fn read<R: Read>(stream: R) -> Result<Reader<R>> {
 
 /// Load a table from the given path.
 pub fn load<P: AsRef<Path>>(path: P) -> Result<Entry> {
-	Ok(try!(Table::load(&mut try!(open(path)))).into())
+	Ok(Table::load(&mut open(path)?)?.into())
 }

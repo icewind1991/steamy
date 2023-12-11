@@ -1,9 +1,9 @@
 use std::ops::Deref;
 use std::io::{Read};
 use std::collections::HashMap;
-use reader::{Reader, Event, Item};
+use crate::reader::{Reader, Event, Item};
 use super::{Entry, Statement, Value, Array};
-use {Result as Res};
+use crate::{Result as Res};
 
 /// A table of entries.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -32,7 +32,7 @@ impl Table {
 		let mut map = HashMap::new();
 
 		loop {
-			match try!(reader.event()) {
+			match reader.event()? {
 				Event::Entry(Item::Statement(..), _) =>
 					(),
 
@@ -43,7 +43,7 @@ impl Table {
 					insert(&mut map, key, Value::from(value).into()),
 
 				Event::GroupStart(name) =>
-					insert(&mut map, name, try!(Table::load(reader)).into()),
+					insert(&mut map, name, Table::load(reader)?.into()),
 
 				Event::GroupEnd | Event::End =>
 					break

@@ -1,5 +1,10 @@
-use std::str::{self, Utf8Error};
+use std::str;
 use std::borrow::Cow;
+use nom::branch::alt;
+use nom::bytes::streaming::{take_while, tag, is_not, escaped, take};
+use nom::{error::Error, IResult, Err::*, Needed};
+use nom::error::ErrorKind;
+use nom::sequence::delimited;
 
 /// Parser token.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -17,9 +22,10 @@ pub enum Token<'a> {
 	Statement(Cow<'a, str>),
 }
 
-fn string(buffer: &[u8]) -> Result<Cow<str>, Utf8Error> {
+fn string(buffer: &[u8]) -> Result<Cow<str>, Error<&[u8]>> {
+	let bytes = buffer;
 	if buffer.iter().any(|&b| b == b'\\') {
-		let mut buffer = buffer.iter().cloned();
+		let mut buffer = buffer.iter().copied();
 		let mut string = Vec::with_capacity(buffer.len());
 
 		while let Some(byte) = buffer.next() {
@@ -40,103 +46,145 @@ fn string(buffer: &[u8]) -> Result<Cow<str>, Utf8Error> {
 		}
 
 		match String::from_utf8(string) {
-			Err(err) => Err(err.utf8_error()),
+			Err(err) => Err(Error::new(bytes, ErrorKind::Verify)),
 			Ok(str)  => Ok(str.into())
 		}
 	}
 	else {
-		Ok(try!(str::from_utf8(buffer)).into())
+		Ok(str::from_utf8(buffer).map_err(|_|Error::new(bytes, ErrorKind::Verify))?.into())
 	}
 }
 
-named!(pub next(&[u8]) -> Token,
-	chain!(many0!(whitespace) ~ value: alt!(open | close | bare | enclosed) ~ many0!(whitespace),
-		|| { value }));
+fn whitespace(input: &[u8]) -> IResult<&[u8], &[u8]> {
+	match take_while(|b: u8| b.is_ascii_whitespace())(input) {
+		Ok(res) => Ok(res),
+		// end of input
+		Err(Incomplete(Needed::Size(size))) if size.get() == 1 => Ok((&[][..], input)),
+		Err(e) => Err(e)
+	}
+}
 
-named!(pub whitespace(&[u8]) -> (),
-	value!((), alt!(char!(' ') | char!('\t') | char!('\n') | char!('\r'))));
+pub fn next(input: &[u8]) -> IResult<&[u8], Token> {
+	let (input, _) = whitespace(input)?;
+	let (input, value) = alt((open, close, bare, enclosed))(input)?;
+	let (input, _) = whitespace(input)?;
+	Ok((input, value))
+}
 
-named!(pub open(&[u8]) -> Token,
-	value!(Token::GroupStart, char!('{')));
+fn open(input: &[u8]) -> IResult<&[u8], Token> {
+	let (input, _) = tag(b"{")(input)?;
+	Ok((input, Token::GroupStart))
+}
 
-named!(pub close(&[u8]) -> Token,
-	value!(Token::GroupEnd, char!('}')));
+fn close(input: &[u8]) -> IResult<&[u8], Token> {
+	let (input, _) = tag(b"}")(input)?;
+	Ok((input, Token::GroupEnd))
+}
 
-named!(pub empty_item(&[u8]) -> Token,
-	value!(Token::Item(Cow::Borrowed("")), tag!("\"\"")));
+fn empty_item(input: &[u8]) -> IResult<&[u8], Token> {
+	let (input, _) = tag("\"\"")(input)?;
+	Ok((input, Token::Item(Cow::Borrowed(""))))
+}
 
-named!(pub bare(&[u8]) -> Token,
-	alt!(bare_statement | bare_item));
+fn bare(input: &[u8]) -> IResult<&[u8], Token> {
+	alt((bare_statement, bare_item))(input)
+}
 
-named!(bare_statement(&[u8]) -> Token,
-	map_res!(chain!(char!('#') ~ value: is_not!(" \t\n\r{}\""), || { value }),
-		|v| { string(v).map(|v| Token::Statement(v)) }));
+/// like `is_not`, but returning `Ok` instead of `Incomplete` if the full input is consumed
+fn is_not_alt<'a>(arr: &'static str) -> impl Fn(&'a [u8]) -> IResult<&'a [u8], &'a [u8]> {
+	move |input: &[u8]| {
+		match is_not(arr)(input) {
+			Ok(res) => Ok(res),
+			// end of input
+			Err(Incomplete(Needed::Size(size))) if size.get() == 1 => Ok((&[][..], input)),
+			Err(e) => Err(e)
+		}
+	}
+}
 
-named!(bare_item(&[u8]) -> Token,
-	map_res!(is_not!(" \t\n\r{}\""),
-		|v| { string(v).map(|v| Token::Item(v)) }));
+fn bare_statement(input: &[u8]) -> IResult<&[u8], Token> {
+	let (input, _) = tag(b"#")(input)?;
+	let (input, value) = is_not_alt(" \t\n\r{}\"")(input)?;
+	let value = string(value).map_err(Error)?;
+	Ok((input, Token::Statement(value)))
+}
 
-named!(pub enclosed(&[u8]) -> Token,
-	alt!(enclosed_statement | enclosed_item | empty_item));
+fn bare_item(input: &[u8]) -> IResult<&[u8], Token> {
+	let (input, value) = is_not_alt(" \t\n\r{}\"")(input)?;
+	let value = string(value).map_err(Error)?;
+	Ok((input, Token::Item(value)))
+}
 
-named!(enclosed_content,
-	escaped!(is_not!("\"\\"), '\\', is_a_bytes!(&b"\"n\\"[..])));
+fn enclosed(input: &[u8]) -> IResult<&[u8], Token> {
+	alt((enclosed_statement, enclosed_item, empty_item))(input)
+}
 
-named!(enclosed_statement(&[u8]) -> Token,
-	map_res!(delimited!(char!('"'), chain!(char!('#') ~ value: enclosed_content, || { value }), char!('"')),
-		|v| { string(v).map(|v| Token::Statement(v)) }));
+fn enclosed_content(input: &[u8]) -> IResult<&[u8], &[u8]> {
+	escaped(is_not_alt("\"\\"), '\\', take(1usize))(input)
+}
 
-named!(enclosed_item(&[u8]) -> Token,
-	map_res!(delimited!(char!('"'), enclosed_content, char!('"')),
-		|v| { string(v).map(|v| Token::Item(v)) }));
+fn enclosed_statement(input: &[u8]) -> IResult<&[u8], Token> {
+	let (input, value) = delimited(tag(b"\""), |input| {
+		let (input, _) = tag(b"#")(input)?;
+		enclosed_content(input)
+	}, tag(b"\""))(input)?;
+	let value = string(value).map_err(Error)?;
+	Ok((input, Token::Statement(value)))
+}
+
+fn enclosed_item(input: &[u8]) -> IResult<&[u8], Token> {
+	let (input, value) = delimited(tag(b"\""), enclosed_content, tag(b"\""))(input)?;
+	let value = string(value).map_err(Error)?;
+	Ok((input, Token::Item(value)))
+}
 
 #[cfg(test)]
 mod tests {
-	use nom::IResult::Done;
 	use super::Token;
 
 	#[test]
 	fn next() {
-		assert_eq!(super::next(b"test"), Done(&b""[..], Token::Item("test".into())));
-		assert_eq!(super::next(b"\"test\""), Done(&b""[..], Token::Item("test".into())));
-		assert_eq!(super::next(b"\"\""), Done(&b""[..], Token::Item("".into())));
-		assert_eq!(super::next(b"#test"), Done(&b""[..], Token::Statement("test".into())));
-		assert_eq!(super::next(b"\"#test\""), Done(&b""[..], Token::Statement("test".into())));
-		assert_eq!(super::next(b"{"), Done(&b""[..], Token::GroupStart));
-		assert_eq!(super::next(b"}"), Done(&b""[..], Token::GroupEnd));
+		assert_eq!(super::next(b"test"), Ok((&b""[..], Token::Item("test".into()))));
+		assert_eq!(super::next(b"\"test\""), Ok((&b""[..], Token::Item("test".into()))));
+		assert_eq!(super::next(b"\"\""), Ok((&b""[..], Token::Item("".into()))));
+		assert_eq!(super::next(b"#test"), Ok((&b""[..], Token::Statement("test".into()))));
+		assert_eq!(super::next(b"\"#test\""), Ok((&b""[..], Token::Statement("test".into()))));
+		assert_eq!(super::next(b"{"), Ok((&b""[..], Token::GroupStart)));
+		assert_eq!(super::next(b"}"), Ok((&b""[..], Token::GroupEnd)));
 	}
 
 	#[test]
 	fn bare() {
-		assert_eq!(super::bare(b"test"), Done(&b""[..], Token::Item("test".into())));
-		assert_eq!(super::bare(b"#test"), Done(&b""[..], Token::Statement("test".into())));
+		assert_eq!(super::bare(b"test"), Ok((&b""[..], Token::Item("test".into()))));
+		assert_eq!(super::bare(b"#test"), Ok((&b""[..], Token::Statement("test".into()))));
 
-		assert_eq!(super::bare(b"lol wut"), Done(&b" wut"[..], Token::Item("lol".into())));
-		assert_eq!(super::bare(b"#lol wut"), Done(&b" wut"[..], Token::Statement("lol".into())));
+		assert_eq!(super::bare(b"lol wut"), Ok((&b" wut"[..], Token::Item("lol".into()))));
+		assert_eq!(super::bare(b"#lol wut"), Ok((&b" wut"[..], Token::Statement("lol".into()))));
 
-		assert_eq!(super::bare(b"lol{"), Done(&b"{"[..], Token::Item("lol".into())));
-		assert_eq!(super::bare(b"#lol{"), Done(&b"{"[..], Token::Statement("lol".into())));
+		assert_eq!(super::bare(b"lol{"), Ok((&b"{"[..], Token::Item("lol".into()))));
+		assert_eq!(super::bare(b"#lol{"), Ok((&b"{"[..], Token::Statement("lol".into()))));
 
-		assert_eq!(super::bare(b"lol}"), Done(&b"}"[..], Token::Item("lol".into())));
-		assert_eq!(super::bare(b"#lol}"), Done(&b"}"[..], Token::Statement("lol".into())));
+		assert_eq!(super::bare(b"lol}"), Ok((&b"}"[..], Token::Item("lol".into()))));
+		assert_eq!(super::bare(b"#lol}"), Ok((&b"}"[..], Token::Statement("lol".into()))));
 	}
 
 	#[test]
 	fn enclosed() {
-		assert_eq!(super::enclosed(b"\"test\""), Done(&b""[..], Token::Item("test".into())));
-		assert_eq!(super::enclosed(b"\"#test\""), Done(&b""[..], Token::Statement("test".into())));
+		assert_eq!(super::enclosed(b"\"test\""), Ok((&b""[..], Token::Item("test".into()))));
+		assert_eq!(super::enclosed(b"\"#test\""), Ok((&b""[..], Token::Statement("test".into()))));
 
-		assert_eq!(super::enclosed(b"\"te\\\"st\""), Done(&b""[..], Token::Item("te\"st".into())));
-		assert_eq!(super::enclosed(b"\"#te\\\"st\""), Done(&b""[..], Token::Statement("te\"st".into())));
+		assert_eq!(super::enclosed(b"\"te\\\"st\""), Ok((&b""[..], Token::Item("te\"st".into()))));
+		assert_eq!(super::enclosed(b"\"te\\st\""), Ok((&b""[..], Token::Item("te\\st".into()))));
+		assert_eq!(super::enclosed(b"\"#te\\\"st\""), Ok((&b""[..], Token::Statement("te\"st".into()))));
 	}
 
 	#[test]
 	fn open() {
-		assert_eq!(super::open(b"{"), Done(&b""[..], Token::GroupStart));
+		assert_eq!(super::open(b"{"), Ok((&b""[..], Token::GroupStart)));
 	}
 
 	#[test]
 	fn close() {
-		assert_eq!(super::close(b"}"), Done(&b""[..], Token::GroupEnd));
+		assert_eq!(super::close(b"}"), Ok((&b""[..], Token::GroupEnd)));
 	}
 }
