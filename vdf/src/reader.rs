@@ -1,10 +1,7 @@
 use std::ops::Deref;
-use std::io::{Read, BufReader};
-use std::num::NonZeroUsize;
+use nom::Err::Incomplete;
 use crate::parser::{self, Token};
 use crate::{Result as Res, Error};
-use nom::Err::*;
-use nom::Needed;
 
 /// Kinds of item.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -51,76 +48,51 @@ pub enum Event {
 	/// An entry.
 	Entry(Item, Item),
 
-	Comment,
-
 	/// EOF has been reached.
 	End,
 }
 
-/// A streaming VDF reader.
-pub struct Reader<R: Read> {
-	stream:   BufReader<R>,
-	buffer:   Vec<u8>,
-	consumed: usize,
+/// A VDF token reader.
+pub struct Reader<'a> {
+	buffer: &'a [u8],
 }
 
-impl<R: Read> From<R> for Reader<R> {
-	fn from(stream: R) -> Reader<R> {
+impl<'a> From<&'a [u8]> for Reader<'a> {
+	fn from(buffer: &'a [u8]) -> Self {
 		Reader {
-			stream:   BufReader::new(stream),
-			buffer:   Vec::new(),
-			consumed: 0,
+			buffer,
 		}
 	}
 }
 
-impl<R: Read> Reader<R> {
-	fn prepare(&mut self) -> Res<()> {
-		if self.consumed > 0 {
-			self.buffer.drain(..self.consumed);
-		}
-
-		loop {
-			let needed = match parser::next(&self.buffer) {
-				Err(Failure(_) | Error(_)) =>
-					return Err(Error::Parse),
-
-				Err(Incomplete(Needed::Size(size))) =>
-					size,
-
-				Err(Incomplete(Needed::Unknown)) =>
-					NonZeroUsize::new(64).unwrap(),
-
-				Ok((rest, _)) => {
-					self.consumed = self.buffer.len() - rest.len();
-					break;
-				}
-			};
-
-			if self.stream.by_ref().take(needed.get() as u64).read_to_end(&mut self.buffer)? == 0 {
-				return Err(Error::Eof);
+impl<'a> Reader<'a> {
+	/// Get the next parser token without doing any copies.
+	pub fn token(&mut self) -> Res<Token<'a>> {
+		let (remaining, token) = match parser::next(&self.buffer) {
+			Ok(res) => Ok(res),
+			Err(Incomplete(_)) => Err(Error::Eof),
+			Err(_) => {
+				Err(Error::Parse)
 			}
-		}
-
-		Ok(())
+		}?;
+		self.buffer = remaining;
+		Ok(token)
 	}
 
-	/// Get the next parser token without doing any copies.
-	pub fn token(&mut self) -> Res<Token> {
-		self.prepare()?;
-
-		match parser::next(&self.buffer) {
-			Ok((_, token)) =>
-				Ok(token),
-
-			_ =>
-				unreachable!()
+	pub fn non_comment_token(&mut self) -> Res<Token<'a>> {
+		loop {
+			match self.token()? {
+				Token::Comment(_) => {
+					continue;
+				},
+				token => return Ok(token)
+			}
 		}
 	}
 
 	/// Get the next event, this does copies.
 	pub fn event(&mut self) -> Res<Event> {
-		let key = match self.token() {
+		let key = match self.non_comment_token() {
 			Err(Error::Eof) =>
 				return Ok(Event::End),
 
@@ -140,10 +112,10 @@ impl<R: Read> Reader<R> {
 				Item::Statement(s.into_owned()),
 
 			Ok(Token::Comment(_)) =>
-				return Ok(Event::Comment),
+				unreachable!()
 		};
 
-		let value = match self.token() {
+		let value = match self.non_comment_token() {
 			Err(Error::Eof) =>
 				return Ok(Event::End),
 
@@ -163,14 +135,14 @@ impl<R: Read> Reader<R> {
 				Item::Statement(s.into_owned()),
 
 			Ok(Token::Comment(_)) =>
-				return Ok(Event::Comment),
+				unreachable!()
 		};
 
 		Ok(Event::Entry(key, value))
 	}
 }
 
-impl<R: Read> Iterator for Reader<R> {
+impl<'a> Iterator for Reader<'a> {
 	type Item = Event;
 
 	fn next(&mut self) -> Option<Self::Item> {

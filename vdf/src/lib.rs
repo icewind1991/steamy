@@ -1,5 +1,3 @@
-use std::io::{Read};
-use std::fs::File;
 use std::path::Path;
 
 mod error;
@@ -15,17 +13,13 @@ pub use entry::{Table, Entry, Statement, Value};
 
 pub mod parser;
 
-/// Create a reader from the given path.
-pub fn open<P: AsRef<Path>>(path: P) -> Result<Reader<File>> {
-	Ok(Reader::from(File::open(path)?))
-}
-
-/// Create a reader from the given stream.
-pub fn read<R: Read>(stream: R) -> Result<Reader<R>> {
-	Ok(Reader::from(stream))
+pub fn parse(buffer: &[u8]) -> Result<Entry> {
+	let mut reader = Reader::from(buffer);
+	Ok(Table::load(&mut reader)?.into())
 }
 
 /// Load a table from the given path.
 pub fn load<P: AsRef<Path>>(path: P) -> Result<Entry> {
-	Ok(Table::load(&mut open(path)?)?.into())
+	let buffer = std::fs::read(path)?;
+	parse(&buffer)
 }

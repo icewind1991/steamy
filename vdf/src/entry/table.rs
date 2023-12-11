@@ -1,5 +1,4 @@
 use std::ops::Deref;
-use std::io::{Read};
 use std::collections::HashMap;
 use crate::reader::{Reader, Event, Item};
 use super::{Entry, Statement, Value, Array};
@@ -28,7 +27,7 @@ fn insert(map: &mut HashMap<String, Entry>, key: String, value: Entry) {
 
 impl Table {
 	/// Load a table from the given `Reader`.
-	pub fn load<R: Read>(reader: &mut Reader<R>) -> Res<Table> {
+	pub fn load(reader: &mut Reader) -> Res<Table> {
 		let mut map = HashMap::new();
 
 		loop {
@@ -47,9 +46,6 @@ impl Table {
 
 				Event::GroupEnd | Event::End =>
 					break,
-
-				Event::Comment =>
-					continue,
 			}
 		}
 
