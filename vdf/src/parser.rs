@@ -35,9 +35,6 @@ fn string(buffer: &[u8]) -> Result<Cow<str>, Error<&[u8]>> {
 			if byte == b'\\' {
 				match buffer.next() {
 					Some(b'\\') => string.push(b'\\'),
-					Some(b'n')  => string.push(b'\n'),
-					Some(b't')  => string.push(b'\t'),
-					Some(b'r')  => string.push(b'\r'),
 					Some(b'"')  => string.push(b'"'),
 					Some(byte)  => string.extend_from_slice(&[b'\\', byte]),
 					None        => break
